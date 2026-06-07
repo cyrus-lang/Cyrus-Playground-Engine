@@ -1,0 +1,31 @@
+[package]
+name = "cyrus-playground-bot"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "cyrus-bot"
+path = "src/main.rs"
+
+[[bin]]
+name = "cyrus-api"
+path = "src/api.rs"
+
+[dependencies]
+teloxide = { version = "0.17.0", features = ["macros"] }
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", features = ["json", "stream"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+zip = "2.1"
+tempfile = "3.10"
+log = "0.4"
+env_logger = "0.11"
+axum = "0.7"
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors", "limit"] }
+dashmap = "6.1"
+
+[lib]
+name = "cyrus_playground"
+path = "src/lib.rs"

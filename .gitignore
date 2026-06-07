@@ -1,0 +1,4 @@
+/target
+.env
+cyrus_bin/
+*.cyrus

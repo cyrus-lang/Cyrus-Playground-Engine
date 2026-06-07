@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cyrus Playground</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            margin-bottom: 20px;
+            color: #4ec9b0;
+        }
+
+        .editor-container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+
+        .panel {
+            background: #252526;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        .panel-header {
+            background: #2d2d30;
+            padding: 10px 15px;
+            font-weight: bold;
+            border-bottom: 1px solid #3e3e42;
+        }
+
+        textarea {
+            width: 100%;
+            height: 400px;
+            background: #1e1e1e;
+            color: #d4d4d4;
+            border: none;
+            padding: 15px;
+            font-family: 'Consolas', 'Courier New', monospace;
+            font-size: 14px;
+            resize: vertical;
+        }
+
+        .output {
+            padding: 15px;
+            font-family: 'Consolas', 'Courier New', monospace;
+            font-size: 14px;
+            white-space: pre-wrap;
+            min-height: 400px;
+            max-height: 600px;
+            overflow-y: auto;
+        }
+
+        .output.success {
+            color: #4ec9b0;
+        }
+
+        .output.error {
+            color: #f48771;
+        }
+
+        .controls {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+
+        button {
+            background: #0e639c;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: bold;
+            transition: background 0.2s;
+        }
+
+        button:hover {
+            background: #1177bb;
+        }
+
+        button:disabled {
+            background: #3e3e42;
+            cursor: not-allowed;
+        }
+
+        .loading {
+            display: inline-block;
+            margin-left: 10px;
+        }
+
+        .status {
+            padding: 10px;
+            background: #252526;
+            border-radius: 4px;
+            margin-top: 10px;
+        }
+
+        @media (max-width: 768px) {
+            .editor-container {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Cyrus Playground</h1>
+        
+        <div class="controls">
+            <button id="runBtn">Run Code</button>
+            <button id="clearBtn">Clear</button>
+            <span id="loading" class="loading" style="display: none;">⏳ Running...</span>
+        </div>
+
+        <div class="editor-container">
+            <div class="panel">
+                <div class="panel-header">Code Editor</div>
+                <textarea id="codeEditor" placeholder="Write your Cyrus code here...">import std::libc{printf};
+
+pub fn main() {
+    printf("Hello, Cyrus!\n");
+}</textarea>
+            </div>
+
+            <div class="panel">
+                <div class="panel-header">Output</div>
+                <div id="output" class="output">Run your code to see the output...</div>
+            </div>
+        </div>
+
+        <div class="status">
+            <strong>API Endpoint:</strong> <span id="apiEndpoint">http://localhost:3000/api/execute</span>
+        </div>
+    </div>
+
+    <script>
+        const apiEndpoint = 'http://localhost:3000/api/execute';
+        
+        const codeEditor = document.getElementById('codeEditor');
+        const outputDiv = document.getElementById('output');
+        const runBtn = document.getElementById('runBtn');
+        const clearBtn = document.getElementById('clearBtn');
+        const loading = document.getElementById('loading');
+
+        async function runCode() {
+            const code = codeEditor.value.trim();
+            
+            if (!code) {
+                outputDiv.textContent = 'Error: Code cannot be empty';
+                outputDiv.className = 'output error';
+                return;
+            }
+
+            runBtn.disabled = true;
+            loading.style.display = 'inline-block';
+            outputDiv.textContent = '⏳ Running...';
+            outputDiv.className = 'output';
+
+            try {
+                const response = await fetch(apiEndpoint, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ code })
+                });
+
+                const result = await response.json();
+
+                if (response.ok) {
+                    let output = '';
+                    
+                    if (result.success) {
+                        output = `✅ Success (${result.execution_time.toFixed(2)}s)\n\n`;
+                        outputDiv.className = 'output success';
+                    } else {
+                        output = `❌ Failed (${result.execution_time.toFixed(2)}s)\n\n`;
+                        outputDiv.className = 'output error';
+                    }
+
+                    if (result.stdout) {
+                        output += result.stdout;
+                    }
+
+                    if (result.stderr) {
+                        if (result.stdout) output += '\n';
+                        output += result.stderr;
+                    }
+
+                    if (!result.stdout && !result.stderr) {
+                        output += '(no output)';
+                    }
+
+                    outputDiv.textContent = output;
+                } else {
+                    outputDiv.textContent = `❌ Error: ${result.error || 'Unknown error'}`;
+                    outputDiv.className = 'output error';
+                }
+            } catch (error) {
+                outputDiv.textContent = `❌ Network Error: ${error.message}\n\nMake sure the API server is running on ${apiEndpoint}`;
+                outputDiv.className = 'output error';
+            } finally {
+                runBtn.disabled = false;
+                loading.style.display = 'none';
+            }
+        }
+
+        function clearOutput() {
+            outputDiv.textContent = 'Run your code to see the output...';
+            outputDiv.className = 'output';
+        }
+
+        runBtn.addEventListener('click', runCode);
+        clearBtn.addEventListener('click', clearOutput);
+
+        codeEditor.addEventListener('keydown', (e) => {
+            if (e.key === 'Tab') {
+                e.preventDefault();
+                const start = codeEditor.selectionStart;
+                const end = codeEditor.selectionEnd;
+                codeEditor.value = codeEditor.value.substring(0, start) + '    ' + codeEditor.value.substring(end);
+                codeEditor.selectionStart = codeEditor.selectionEnd = start + 4;
+            }
+        });
+    </script>
+</body>
+</html>
