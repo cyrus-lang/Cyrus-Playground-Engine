@@ -94,21 +94,6 @@ const result = await response.json();
 console.log(result);
 ```
 
-### Python
-```python
-import requests
-
-response = requests.post('http://localhost:3000/api/execute', json={
-    'code': '''import std::libc{printf};
-
-pub fn main() {
-    printf("Hello from Cyrus!\\n");
-}'''
-})
-
-print(response.json())
-```
-
 ## Running the API
 
 ```bash
@@ -125,38 +110,6 @@ Or:
 source .env
 cargo run --bin cyrus-api
 ```
-
-## Production Deployment
-
-For production, consider:
-
-1. **Reverse Proxy**: Use Nginx or Caddy
-2. **Rate Limiting**: Implement per-IP limits
-3. **Sandbox**: Add container-based isolation (Docker, firejail, etc.)
-4. **Monitoring**: Add metrics and logging
-5. **HTTPS**: Use TLS certificate
-6. **Authentication**: Add API keys if needed
-
-Example Nginx config:
-```nginx
-server {
-    listen 80;
-    server_name api.cyrus-lang.com;
-
-    location /api/ {
-        proxy_pass http://localhost:3000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        
-        # Rate limiting
-        limit_req zone=api burst=10 nodelay;
-    }
-}
-```
-
-## Docker Support
-
-Coming soon...
 
 ## Security Notes
 

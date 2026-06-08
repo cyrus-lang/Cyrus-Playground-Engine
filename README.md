@@ -41,7 +41,7 @@ A Telegram bot and REST API for executing Cyrus programming language code using 
    ```
    
    Edit `.env` and add:
-   - `TELOXIDE_TOKEN`: Your Telegram bot token from [@BotFather](https://t.me/botfather)
+   - `CYRUS_BOT_TOKEN`: Your Telegram bot token from [@BotFather](https://t.me/botfather)
    - `PORT`: API server port (default: 3000)
    - `RUST_LOG`: Log level (info, debug, error)
 

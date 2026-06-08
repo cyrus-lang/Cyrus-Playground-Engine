@@ -2,3 +2,4 @@
 .env
 cyrus_bin/
 *.cyrus
+configs/

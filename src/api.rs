@@ -1,11 +1,6 @@
-use axum::{
-    extract::State,
-    http::StatusCode,
-    response::Json,
-    routing::post,
-    Router,
-};
-use cyrus_playground::*;
+
+use axum::{extract::State, http::StatusCode, response::Json, routing::post, Router};
+use cyrus_playground::engine::{Executor, auto_update_cyrus, execute_cyrus_code};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -31,7 +26,7 @@ struct ErrorResponse {
 }
 
 async fn execute_handler(
-    State(executor): State<Arc<Mutex<CyrusExecutor>>>,
+    State(executor): State<Arc<Mutex<Executor>>>,
     Json(payload): Json<ExecuteRequest>,
 ) -> Result<Json<ExecuteResponse>, (StatusCode, Json<ErrorResponse>)> {
     if payload.code.is_empty() {
@@ -75,7 +70,7 @@ async fn main() {
     env_logger::init();
     log::info!("Starting Cyrus Playground API");
 
-    let executor = Arc::new(Mutex::new(CyrusExecutor::new()));
+    let executor = Arc::new(Mutex::new(Executor::new()));
 
     let executor_clone = Arc::clone(&executor);
     tokio::spawn(async move {
