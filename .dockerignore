@@ -1,0 +1,4 @@
+target/
+.git/
+configs/state.toml
+.env
