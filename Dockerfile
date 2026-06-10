@@ -13,10 +13,10 @@ COPY configs ./configs
 RUN cargo build --release
 
 # Stage 2: Runtime Environment
-FROM debian:bookworm-slim
+FROM ubuntu:26.04
 
 # Install ca-certificates and bash
-RUN apt-get update && apt-get install -y ca-certificates tzdata bash && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y ca-certificates tzdata bash gcc clang && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 

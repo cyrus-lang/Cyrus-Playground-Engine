@@ -407,11 +407,27 @@ async fn handle_message(
         let should_execute = if let Some(entities) = msg.entities() {
             entities.iter().any(|e| {
                 if e.kind == teloxide::types::MessageEntityKind::Mention {
-                    let start = e.offset;
-                    let end = start + e.length;
-                    let mention = &trimmed[start..end];
-                    log::info!("Found mention: {}", mention);
-                    mention == app_config.bot_username
+                    // Extract mention using byte indices properly
+                    let start = e.offset as usize;
+                    let end = (e.offset + e.length) as usize;
+
+                    // Ensure indices are within bounds
+                    if start > text.len() || end > text.len() {
+                        log::warn!("Mention indices out of bounds: {}-{}", start, end);
+                        return false;
+                    }
+
+                    // Extract the byte slice and convert to string
+                    match text.get(start..end) {
+                        Some(mention) => {
+                            log::info!("Found mention: {}", mention);
+                            mention == app_config.bot_username
+                        }
+                        None => {
+                            log::warn!("Failed to extract mention at byte range {}-{}", start, end);
+                            false
+                        }
+                    }
                 } else {
                     false
                 }
@@ -423,13 +439,44 @@ async fn handle_message(
         log::info!("Should execute: {}", should_execute);
 
         if should_execute {
-            let code = trimmed
-                .replace(&app_config.bot_username, "")
-                .trim()
-                .to_string();
-            log::info!("Code to execute: {}", code);
-            if !code.is_empty() {
-                execute_and_reply(&bot, &msg, &code, executor).await?;
+            // Extract the code after removing the bot mention
+            // Find the bot mention in the text
+            if let Some(mention_entity) = msg.entities().and_then(|entities| {
+                entities.iter().find(|e| {
+                    if let teloxide::types::MessageEntityKind::Mention = e.kind {
+                        if let Some(mention) =
+                            text.get(e.offset as usize..(e.offset + e.length) as usize)
+                        {
+                            mention == app_config.bot_username
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                })
+            }) {
+                let before_mention = &text[..mention_entity.offset as usize];
+                let after_mention =
+                    &text[(mention_entity.offset + mention_entity.length) as usize..];
+                let code = format!("{}{}", before_mention, after_mention)
+                    .trim()
+                    .to_string();
+
+                log::info!("Code to execute: {}", code);
+                if !code.is_empty() {
+                    execute_and_reply(&bot, &msg, &code, executor).await?;
+                }
+            } else {
+                // Fallback to simple replacement if we can't find the entity properly
+                let code = text
+                    .replace(&app_config.bot_username, "")
+                    .trim()
+                    .to_string();
+                log::info!("Code to execute (fallback): {}", code);
+                if !code.is_empty() {
+                    execute_and_reply(&bot, &msg, &code, executor).await?;
+                }
             }
         }
     }
