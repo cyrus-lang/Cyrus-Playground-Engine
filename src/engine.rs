@@ -45,12 +45,14 @@ pub async fn execute_cyrus_code(
     let temp_file = tempfile::Builder::new()
         .suffix(".cyrus")
         .tempfile()
-        .map_err(|e| format!("Failed to create temp file: {}", e)).map_err(|e| e.to_string())?;
+        .map_err(|e| format!("Failed to create temp file: {}", e))
+        .map_err(|e| e.to_string())?;
 
     temp_file
         .as_file()
         .write_all(code.as_bytes())
-        .map_err(|e| format!("Failed to write code: {}", e)).map_err(|e| e.to_string())?;
+        .map_err(|e| format!("Failed to write code: {}", e))
+        .map_err(|e| e.to_string())?;
 
     let start = std::time::Instant::now();
 
@@ -70,7 +72,8 @@ pub async fn execute_cyrus_code(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
-        .map_err(|e| format!("Failed to execute: {}", e)).map_err(|e| e.to_string())?;
+        .map_err(|e| format!("Failed to execute: {}", e))
+        .map_err(|e| e.to_string())?;
 
     let elapsed = start.elapsed();
 
@@ -82,190 +85,344 @@ pub async fn execute_cyrus_code(
     })
 }
 
-pub async fn download_latest_cyrus(
-    executor: Arc<Mutex<Executor>>,
-) -> Result<PathBuf, String> {
-    let extract_dir = std::env::current_dir()
-        .map_err(|e| e.to_string())?
-        .join("cyrus_bin");
-    
-    if extract_dir.exists() {
-        if let Ok(existing_binary) = find_cyrus_binary(&extract_dir) {
-            let state_lock = executor.lock().await;
-            if state_lock.cyrus_binary_path.is_none() {
-                drop(state_lock);
-                log::info!("Found existing binary, using it");
-                
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    let mut perms = fs::metadata(&existing_binary)
-                        .map_err(|e| e.to_string())?
-                        .permissions();
-                    perms.set_mode(0o755);
-                    fs::set_permissions(&existing_binary, perms)
-                        .map_err(|e| e.to_string()).map_err(|e| e.to_string())?;
-                }
-                
-                let mut state_lock = executor.lock().await;
-                state_lock.cyrus_binary_path = Some(existing_binary.clone());
-                log::info!("Binary ready (from cache)");
-                return Ok(existing_binary);
-            }
-            drop(state_lock);
-        }
-    }
+pub async fn download_latest_cyrus(executor: Arc<Mutex<Executor>>) -> Result<PathBuf, String> {
+    const REPO: &str = "cyrus-lang/Cyrus";
+    const WORKFLOW: &str = "build-linux.yml";
+    const BRANCH: &str = "main";
+    const ARTIFACT_SUFFIX: &str = "-binary";
 
     let client = reqwest::Client::builder()
         .user_agent("cyrus-playground")
         .build()
-        .map_err(|e| e.to_string()).map_err(|e| e.to_string())?;
+        .map_err(|e| format!("Failed to create HTTP client: {e}"))?;
 
-    let runs_url =
-        "https://api.github.com/repos/cyrus-lang/Cyrus/actions/runs?status=success&per_page=1";
-    let runs_response = client.get(runs_url).send().await.map_err(|e| e.to_string()).map_err(|e| e.to_string())?;
-    let runs_json: serde_json::Value = runs_response.json().await.map_err(|e| e.to_string()).map_err(|e| e.to_string())?;
+    /*
+     * IMPORTANT:
+     *
+     * Do NOT use:
+     *
+     * /actions/runs?status=success&per_page=1
+     *
+     * because that includes successful PR builds and runs from unrelated
+     * workflows.
+     *
+     * Query the actual build workflow, main branch, and push events only.
+     */
+    let runs_url = format!(
+        "https://api.github.com/repos/{REPO}/actions/workflows/{WORKFLOW}/runs\
+         ?branch={BRANCH}&event=push&status=success&per_page=1"
+    );
 
-    let run_id = runs_json["workflow_runs"][0]["id"]
+    log::info!("Looking for latest successful {WORKFLOW} build on {BRANCH}");
+
+    let runs_response = client
+        .get(&runs_url)
+        .header("Accept", "application/vnd.github+json")
+        .header("X-GitHub-Api-Version", "2022-11-28")
+        .send()
+        .await
+        .map_err(|e| format!("Failed to query workflow runs: {e}"))?;
+
+    if !runs_response.status().is_success() {
+        return Err(format!(
+            "Failed to query workflow runs: {}",
+            runs_response.status()
+        ));
+    }
+
+    let runs_json: serde_json::Value = runs_response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse workflow runs response: {e}"))?;
+
+    let run = runs_json["workflow_runs"]
+        .as_array()
+        .and_then(|runs| runs.first())
+        .ok_or_else(|| "No successful main-branch builds found".to_string())?;
+
+    let run_id = run["id"]
         .as_u64()
-        .ok_or("No successful runs found").map_err(|e| e.to_string())?;
+        .ok_or_else(|| "Latest workflow run has no valid ID".to_string())?;
 
+    let commit_sha = run["head_sha"].as_str().unwrap_or("unknown");
+
+    let run_number = run["run_number"].as_u64().unwrap_or(0);
+
+    log::info!(
+        "Latest production build: run_id={}, run_number={}, commit={}",
+        run_id,
+        run_number,
+        commit_sha
+    );
+
+    /*
+     * If we already have this exact run, there is nothing to download.
+     *
+     * This check happens AFTER querying GitHub so a stale local cache can
+     * never prevent discovery of a newer build.
+     */
     {
-        let executor_lock = executor.lock().await;
-        if let Some(last_id) = executor_lock.last_run_id {
-            if last_id == run_id {
-                if let Some(path) = &executor_lock.cyrus_binary_path {
-                    if path.exists() {
-                        log::info!("Binary is up to date");
-                        return Ok(path.clone());
-                    }
+        let lock = executor.lock().await;
+
+        if lock.last_run_id == Some(run_id) {
+            if let Some(path) = &lock.cyrus_binary_path {
+                if path.exists() {
+                    log::info!("Cyrus binary is already up to date");
+                    return Ok(path.clone());
                 }
             }
         }
     }
 
-    log::info!("Downloading binary for run_id: {}", run_id);
+    /*
+     * Get artifacts belonging specifically to this workflow run.
+     */
+    let artifacts_url =
+        format!("https://api.github.com/repos/{REPO}/actions/runs/{run_id}/artifacts");
 
-    let artifacts_url = format!(
-        "https://api.github.com/repos/cyrus-lang/Cyrus/actions/runs/{}/artifacts",
-        run_id
-    );
-    let artifacts_response = client.get(&artifacts_url).send().await.map_err(|e| e.to_string()).map_err(|e| e.to_string())?;
-    let artifacts_json: serde_json::Value = artifacts_response.json().await.map_err(|e| e.to_string()).map_err(|e| e.to_string())?;
+    let artifacts_response = client
+        .get(&artifacts_url)
+        .header("Accept", "application/vnd.github+json")
+        .header("X-GitHub-Api-Version", "2022-11-28")
+        .send()
+        .await
+        .map_err(|e| format!("Failed to query artifacts: {e}"))?;
 
+    if !artifacts_response.status().is_success() {
+        return Err(format!(
+            "Failed to query artifacts: {}",
+            artifacts_response.status()
+        ));
+    }
+
+    let artifacts_json: serde_json::Value = artifacts_response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse artifacts response: {e}"))?;
+
+    /*
+     * Select ONLY the real binary artifact.
+     *
+     * Do not use "contains cyrus" or "contains linux":
+     * the workflow currently produces:
+     *
+     *   cyrus-<VERSION>-binary
+     *   cyrus-<VERSION>-portable
+     *   cyrus-<VERSION>-pkgbuild
+     *   cyrus-<VERSION>-deb
+     *   cyrus-<VERSION>-rpm
+     *
+     * We need the artifact containing stdlib as well as the compiler.
+     */
     let artifact = artifacts_json["artifacts"]
         .as_array()
-        .and_then(|arr| {
-            arr.iter().find(|a| {
-                a["name"].as_str().map_or(false, |name| {
-                    name.to_lowercase().contains("linux") || name.to_lowercase().contains("cyrus")
-                })
+        .and_then(|artifacts| {
+            artifacts.iter().find(|artifact| {
+                artifact["name"]
+                    .as_str()
+                    .map(|name| name.ends_with(ARTIFACT_SUFFIX))
+                    .unwrap_or(false)
+                    && artifact["expired"]
+                        .as_bool()
+                        .map(|expired| !expired)
+                        .unwrap_or(true)
             })
         })
-        .or_else(|| {
-            artifacts_json["artifacts"]
-                .as_array()
-                .and_then(|arr| arr.first())
-        })
-        .ok_or("No artifacts found").map_err(|e| e.to_string())?;
+        .ok_or_else(|| {
+            format!(
+                "No non-expired Cyrus binary artifact found for run {}",
+                run_id
+            )
+        })?;
 
-    let artifact_name = artifact["name"].as_str().unwrap_or("artifact");
+    let artifact_id = artifact["id"]
+        .as_u64()
+        .ok_or_else(|| "Artifact has no valid ID".to_string())?;
 
-    let nightly_link_url = format!(
-        "https://nightly.link/cyrus-lang/Cyrus/actions/runs/{}/{}.zip",
-        run_id, artifact_name
-    );
+    let artifact_name = artifact["name"].as_str().unwrap_or("unknown");
 
-    log::info!("Downloading from nightly.link");
+    log::info!("Selected artifact: {} (id={})", artifact_name, artifact_id);
 
-    let artifact_response = client.get(&nightly_link_url).send().await.map_err(|e| e.to_string())?;
+    /*
+     * Download directly from GitHub.
+     *
+     * No nightly.link.
+     */
+    let artifact_url =
+        format!("https://api.github.com/repos/{REPO}/actions/artifacts/{artifact_id}/zip");
+
+    log::info!("Downloading artifact directly from GitHub");
+
+    let artifact_response = client
+        .get(&artifact_url)
+        .header("Accept", "application/vnd.github+json")
+        .header("X-GitHub-Api-Version", "2022-11-28")
+        .send()
+        .await
+        .map_err(|e| format!("Failed to download artifact: {e}"))?;
 
     if !artifact_response.status().is_success() {
-        return Err(format!("Download failed: {}", artifact_response.status()));
+        return Err(format!(
+            "Artifact download failed: {}",
+            artifact_response.status()
+        ));
     }
 
-    let bytes = artifact_response.bytes().await.map_err(|e| e.to_string())?;
+    let bytes = artifact_response
+        .bytes()
+        .await
+        .map_err(|e| format!("Failed to read artifact: {e}"))?;
 
-    let temp_zip = tempfile::NamedTempFile::new().map_err(|e| e.to_string())?;
-    fs::write(temp_zip.path(), bytes).map_err(|e| e.to_string())?;
+    /*
+     * Extract into a temporary directory first.
+     *
+     * This prevents a partially downloaded/broken artifact from destroying
+     * the currently working compiler.
+     */
+    let temp_dir =
+        tempfile::tempdir().map_err(|e| format!("Failed to create temporary directory: {e}"))?;
 
-    let file = fs::File::open(temp_zip.path()).map_err(|e| e.to_string())?;
-    let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+    let temp_zip = temp_dir.path().join("artifact.zip");
 
-    let extract_dir = std::env::current_dir().map_err(|e| e.to_string())?.join("cyrus_bin");
-    if extract_dir.exists() {
-        fs::remove_dir_all(&extract_dir).map_err(|e| e.to_string())?;
-    }
-    fs::create_dir_all(&extract_dir).map_err(|e| e.to_string())?;
+    fs::write(&temp_zip, &bytes).map_err(|e| format!("Failed to write artifact: {e}"))?;
+
+    let file = fs::File::open(&temp_zip).map_err(|e| format!("Failed to open artifact: {e}"))?;
+
+    let mut archive =
+        zip::ZipArchive::new(file).map_err(|e| format!("Invalid artifact ZIP: {e}"))?;
 
     for i in 0..archive.len() {
-        let mut file = archive.by_index(i).map_err(|e| e.to_string())?;
-        let outpath = extract_dir.join(file.name());
+        let mut file = archive
+            .by_index(i)
+            .map_err(|e| format!("Failed to read ZIP entry: {e}"))?;
+
+        let relative_path = PathBuf::from(file.name());
+
+        /*
+         * Protect against ZIP path traversal.
+         */
+        if relative_path
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+        {
+            return Err(format!("Unsafe path in artifact: {}", file.name()));
+        }
+
+        let outpath = temp_dir.path().join(&relative_path);
 
         if file.name().ends_with('/') {
-            fs::create_dir_all(&outpath).map_err(|e| e.to_string())?;
+            fs::create_dir_all(&outpath).map_err(|e| format!("Failed to create directory: {e}"))?;
         } else {
             if let Some(parent) = outpath.parent() {
-                fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                fs::create_dir_all(parent)
+                    .map_err(|e| format!("Failed to create directory: {e}"))?;
             }
-            let mut outfile = fs::File::create(&outpath).map_err(|e| e.to_string())?;
-            std::io::copy(&mut file, &mut outfile).map_err(|e| e.to_string())?;
+
+            let mut outfile = fs::File::create(&outpath)
+                .map_err(|e| format!("Failed to create extracted file: {e}"))?;
+
+            std::io::copy(&mut file, &mut outfile)
+                .map_err(|e| format!("Failed to extract artifact: {e}"))?;
         }
     }
 
-    for entry in fs::read_dir(&extract_dir).map_err(|e| e.to_string())? {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let path = entry.path();
-        
-        if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("zip") {
-            log::info!("Found nested zip: {:?}", path);
-            let nested_file = fs::File::open(&path).map_err(|e| e.to_string())?;
-            let mut nested_archive = zip::ZipArchive::new(nested_file).map_err(|e| e.to_string())?;
-            
-            for i in 0..nested_archive.len() {
-                let mut file = nested_archive.by_index(i).map_err(|e| e.to_string())?;
-                let outpath = extract_dir.join(file.name());
+    /*
+     * Replace the old installation atomically-ish:
+     *
+     *   cyrus_bin/
+     *       cyrus
+     *       stdlib/
+     *
+     * We only touch the real cache after the complete download/extraction
+     * succeeded.
+     */
+    let extract_dir = std::env::current_dir()
+        .map_err(|e| format!("Failed to get current directory: {e}"))?
+        .join("cyrus_bin");
 
-                if file.name().ends_with('/') {
-                    fs::create_dir_all(&outpath).map_err(|e| e.to_string())?;
-                } else {
-                    if let Some(parent) = outpath.parent() {
-                        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-                    }
-                    let mut outfile = fs::File::create(&outpath).map_err(|e| e.to_string())?;
-                    std::io::copy(&mut file, &mut outfile).map_err(|e| e.to_string())?;
-                }
-            }
-            
-            fs::remove_file(&path).map_err(|e| e.to_string())?;
-        }
+    let new_dir = std::env::current_dir()
+        .map_err(|e| format!("Failed to get current directory: {e}"))?
+        .join("cyrus_bin.new");
+
+    if new_dir.exists() {
+        fs::remove_dir_all(&new_dir)
+            .map_err(|e| format!("Failed to remove old temporary installation: {e}"))?;
     }
 
-    let binary_path = find_cyrus_binary(&extract_dir).map_err(|e| e.to_string())?;
+    fs::create_dir_all(&new_dir)
+        .map_err(|e| format!("Failed to create installation directory: {e}"))?;
+
+    /*
+     * Copy the extracted artifact into cyrus_bin.new.
+     */
+    copy_dir_recursive(temp_dir.path(), &new_dir)
+        .map_err(|e| format!("Failed to install artifact: {e}"))?;
+
+    let new_binary = find_cyrus_binary(&new_dir)
+        .map_err(|e| format!("Installed artifact does not contain Cyrus: {e}"))?;
 
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&binary_path).map_err(|e| e.to_string())?.permissions();
+
+        let mut perms = fs::metadata(&new_binary)
+            .map_err(|e| format!("Failed to stat Cyrus binary: {e}"))?
+            .permissions();
+
         perms.set_mode(0o755);
-        fs::set_permissions(&binary_path, perms).map_err(|e| e.to_string())?;
+
+        fs::set_permissions(&new_binary, perms)
+            .map_err(|e| format!("Failed to set Cyrus permissions: {e}"))?;
     }
 
-    let mut executor_lock = executor.lock().await;
-    executor_lock.cyrus_binary_path = Some(binary_path.clone());
-    executor_lock.last_run_id = Some(run_id);
+    /*
+     * Store the run ID alongside the binary.
+     *
+     * This makes the local cache identifiable.
+     */
+    fs::write(new_dir.join(".run-id"), run_id.to_string())
+        .map_err(|e| format!("Failed to write run metadata: {e}"))?;
 
-    log::info!("Binary ready");
+    /*
+     * Remove old installation only after the new one is valid.
+     */
+    if extract_dir.exists() {
+        fs::remove_dir_all(&extract_dir)
+            .map_err(|e| format!("Failed to remove old Cyrus installation: {e}"))?;
+    }
+
+    fs::rename(&new_dir, &extract_dir)
+        .map_err(|e| format!("Failed to install new Cyrus binary: {e}"))?;
+
+    let binary_path = find_cyrus_binary(&extract_dir)
+        .map_err(|e| format!("Installed Cyrus binary cannot be found: {e}"))?;
+
+    /*
+     * Update executor state.
+     */
+    let mut lock = executor.lock().await;
+
+    lock.cyrus_binary_path = Some(binary_path.clone());
+    lock.last_run_id = Some(run_id);
+
+    log::info!(
+        "Cyrus binary updated successfully: run={} commit={}",
+        run_id,
+        commit_sha
+    );
 
     Ok(binary_path)
 }
 
 pub async fn auto_update_cyrus(executor: Arc<Mutex<Executor>>) {
     log::info!("Starting auto-update task");
-    
+
     let binary_exists = {
         let lock = executor.lock().await;
-        lock.cyrus_binary_path.as_ref().map(|p| p.exists()).unwrap_or(false)
+        lock.cyrus_binary_path
+            .as_ref()
+            .map(|p| p.exists())
+            .unwrap_or(false)
     };
 
     if !binary_exists {
@@ -302,7 +459,10 @@ fn find_cyrus_binary(dir: &PathBuf) -> Result<PathBuf, String> {
         } else if path.is_file() {
             if let Some(name) = path.file_name() {
                 let name_str = name.to_string_lossy();
-                if (name_str == "cyrus" || name_str == "Cyrus") && !name_str.ends_with(".zip") && !name_str.ends_with(".sh") {
+                if (name_str == "cyrus" || name_str == "Cyrus")
+                    && !name_str.ends_with(".zip")
+                    && !name_str.ends_with(".sh")
+                {
                     log::info!("Found Cyrus binary: {:?}", path);
                     return Ok(path);
                 }
@@ -310,4 +470,22 @@ fn find_cyrus_binary(dir: &PathBuf) -> Result<PathBuf, String> {
         }
     }
     Err("Cyrus binary not found".to_string())
+}
+
+fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<(), String> {
+    fs::create_dir_all(dst).map_err(|e| e.to_string())?;
+
+    for entry in fs::read_dir(src).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+
+        if src_path.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path)?;
+        } else {
+            fs::copy(&src_path, &dst_path).map_err(|e| e.to_string())?;
+        }
+    }
+
+    Ok(())
 }
