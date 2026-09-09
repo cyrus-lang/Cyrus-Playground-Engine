@@ -1,6 +1,5 @@
-
 use axum::{extract::State, http::StatusCode, response::Json, routing::post, Router};
-use cyrus_playground::engine::{Executor, auto_update_cyrus, execute_cyrus_code};
+use cyrus_playground::engine::{auto_update_cyrus, execute_cyrus_code, Executor};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -70,7 +69,11 @@ async fn main() {
     env_logger::init();
     log::info!("Starting Cyrus Playground API");
 
-    let executor = Arc::new(Mutex::new(Executor::new()));
+    let github_token = std::env::var("GITHUB_TOKEN")
+        .map_err(|_| format!("GITHUB_TOKEN environment variable is not set"))
+        .unwrap();
+
+    let executor = Arc::new(Mutex::new(Executor::new(github_token)));
 
     let executor_clone = Arc::clone(&executor);
     tokio::spawn(async move {

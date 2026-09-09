@@ -12,9 +12,9 @@ name = "cyrus-api"
 path = "src/api.rs"
 
 [dependencies]
+reqwest = { version = "0.12", default-features = true, features = ["json"] }
 teloxide = { version = "0.17.0", features = ["macros"] }
 tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.12", features = ["json", "stream"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 zip = "2.1"
@@ -26,6 +26,8 @@ tower = "0.4"
 tower-http = { version = "0.5", features = ["cors", "limit"] }
 dashmap = "6.1"
 toml = "1.1.2"
+bytes = "1.12.1"
+regex = "1.13.1"
 
 [lib]
 name = "cyrus_playground"

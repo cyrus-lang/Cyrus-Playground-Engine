@@ -63,14 +63,18 @@ async fn main() {
     env_logger::init();
     log::info!("Starting Cyrus Playground Bot");
 
+    let github_token = std::env::var("GITHUB_TOKEN")
+        .map_err(|_| format!("GITHUB_TOKEN environment variable is not set")).unwrap();
+
     let bot_token =
         std::env::var("CYRUS_BOT_TOKEN").expect("CYRUS_BOT_TOKEN environment variable not set");
+
     let bot = Bot::new(bot_token);
 
     // Initialize config and state
     let app_config = Arc::new(AppConfig::load());
     let state = Arc::new(Mutex::new(BotState::load()));
-    let executor = Arc::new(Mutex::new(Executor::new()));
+    let executor = Arc::new(Mutex::new(Executor::new(github_token)));
 
     let executor_clone = Arc::clone(&executor);
     tokio::spawn(async move {

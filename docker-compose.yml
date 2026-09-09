@@ -1,0 +1,13 @@
+version: '3.8'
+
+services:
+  cyrus-bot:
+    image: cyrus-playground-bot:latest
+    container_name: cyrus-playground-bot
+    restart: unless-stopped
+    ports:
+      - "3001:3000"
+    env_file:
+      - ./.env
+    volumes:
+      - ./configs:/app/configs
