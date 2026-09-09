@@ -94,6 +94,7 @@ pub async fn execute_cyrus_code(
     let mut cmd = Command::new(&binary_path);
 
     cmd.arg("run").arg(temp_file.path());
+    cmd.arg("--color=false");
 
     if let Some(stdlib) = stdlib_path {
         cmd.arg("--stdlib").arg(stdlib);
