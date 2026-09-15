@@ -94,7 +94,6 @@ pub async fn execute_cyrus_code(
     let mut cmd = Command::new(&binary_path);
 
     cmd.arg("run").arg(temp_file.path());
-    cmd.arg("--color=false");
 
     if let Some(stdlib) = stdlib_path {
         cmd.arg("--stdlib").arg(stdlib);
@@ -306,13 +305,33 @@ pub async fn download_latest_cyrus(executor: Arc<Mutex<Executor>>) -> Result<Pat
         artifact_version
     );
 
+    let workflow_run_url = format!(
+        "https://github.com/{}/{}/actions/runs/{}",
+        REPO_OWNER, REPO_NAME, run_id
+    );
+
     let download_url = format!(
         "https://api.github.com/repos/{}/{}/actions/artifacts/{}/zip",
         REPO_OWNER, REPO_NAME, artifact_id
     );
 
     log::info!(
-        "Downloading Cyrus artifact from GitHub Actions: {}",
+        "Downloading Cyrus compiler binary from GitHub Actions:\n\
+         - Version: {}\n\
+         - Run ID: {}\n\
+         - Commit SHA: {}\n\
+         - Created At: {}\n\
+         - Artifact Name: {}\n\
+         - Artifact ID: {}\n\
+         - GitHub Workflow Action Run URL: {}\n\
+         - Artifact Download URL: {}",
+        artifact_version,
+        run_id,
+        head_sha,
+        created_at,
+        artifact_name,
+        artifact_id,
+        workflow_run_url,
         download_url
     );
 
@@ -329,8 +348,8 @@ pub async fn download_latest_cyrus(executor: Arc<Mutex<Executor>>) -> Result<Pat
             .unwrap_or_else(|_| "No error body".to_string());
 
         return Err(format!(
-            "Cyrus artifact download failed: HTTP {} - {}",
-            status, error_body
+            "Cyrus artifact download failed: HTTP {} - {} (Download URL: {})",
+            status, error_body, download_url
         ));
     }
 
@@ -345,6 +364,8 @@ pub async fn download_latest_cyrus(executor: Arc<Mutex<Executor>>) -> Result<Pat
         &run_id_string,
         &artifact_name,
         &artifact_version,
+        &download_url,
+        &workflow_run_url,
     )
     .await
 }
@@ -363,6 +384,8 @@ async fn install_artifact(
     run_id: &str,
     artifact_name: &str,
     version: &str,
+    download_url: &str,
+    workflow_run_url: &str,
 ) -> Result<PathBuf, String> {
     let temp_dir =
         tempfile::tempdir().map_err(|e| format!("Failed to create temporary directory: {e}"))?;
@@ -480,6 +503,12 @@ async fn install_artifact(
     fs::write(new_dir.join(".artifact"), artifact_name)
         .map_err(|e| format!("Failed to write artifact metadata: {e}"))?;
 
+    fs::write(new_dir.join(".workflow_url"), workflow_run_url)
+        .map_err(|e| format!("Failed to write workflow URL metadata: {e}"))?;
+
+    fs::write(new_dir.join(".download_url"), download_url)
+        .map_err(|e| format!("Failed to write download URL metadata: {e}"))?;
+
     if extract_dir.exists() {
         fs::remove_dir_all(&extract_dir).map_err(|e| {
             format!(
@@ -528,10 +557,19 @@ async fn install_artifact(
     notify.notify_waiters();
 
     log::info!(
-        "Cyrus binary updated successfully: version={}, run_id={}, artifact={}",
+        "Cyrus binary and stdlib updated successfully!\n\
+         - Version: {}\n\
+         - Run ID: {}\n\
+         - Artifact Name: {}\n\
+         - GitHub Workflow Action Run URL: {}\n\
+         - Artifact Download URL: {}\n\
+         - Installed Binary Path: {:?}",
         version,
         run_id,
-        artifact_name
+        artifact_name,
+        workflow_run_url,
+        download_url,
+        binary_path
     );
 
     Ok(binary_path)
