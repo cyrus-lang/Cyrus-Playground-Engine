@@ -15,6 +15,10 @@ use tokio::time;
 pub struct Executor {
     pub cyrus_binary_path: Option<PathBuf>,
     pub last_run_id: Option<String>,
+    pub version: Option<String>,
+    pub artifact_name: Option<String>,
+    pub workflow_url: Option<String>,
+    pub download_url: Option<String>,
     pub initialized: bool,
     pub ready: Arc<Notify>,
     pub download_error: Option<String>,
@@ -26,6 +30,10 @@ impl Executor {
         Self {
             cyrus_binary_path: None,
             last_run_id: None,
+            version: None,
+            artifact_name: None,
+            workflow_url: None,
+            download_url: None,
             initialized: false,
             ready: Arc::new(Notify::new()),
             download_error: None,
@@ -548,6 +556,10 @@ async fn install_artifact(
 
         lock.cyrus_binary_path = Some(binary_path.clone());
         lock.last_run_id = Some(run_id.to_string());
+        lock.version = Some(version.to_string());
+        lock.artifact_name = Some(artifact_name.to_string());
+        lock.workflow_url = Some(workflow_run_url.to_string());
+        lock.download_url = Some(download_url.to_string());
         lock.initialized = true;
         lock.download_error = None;
 
@@ -607,6 +619,18 @@ pub async fn auto_update_cyrus(executor: Arc<Mutex<Executor>>) {
                 let run_id = fs::read_to_string(extract_dir.join(".run_id"))
                     .ok()
                     .map(|s| s.trim().to_string());
+                let version = fs::read_to_string(extract_dir.join(".version"))
+                    .ok()
+                    .map(|s| s.trim().to_string());
+                let artifact_name = fs::read_to_string(extract_dir.join(".artifact"))
+                    .ok()
+                    .map(|s| s.trim().to_string());
+                let workflow_url = fs::read_to_string(extract_dir.join(".workflow_url"))
+                    .ok()
+                    .map(|s| s.trim().to_string());
+                let download_url = fs::read_to_string(extract_dir.join(".download_url"))
+                    .ok()
+                    .map(|s| s.trim().to_string());
 
                 #[cfg(unix)]
                 {
@@ -627,6 +651,10 @@ pub async fn auto_update_cyrus(executor: Arc<Mutex<Executor>>) {
 
                     lock.cyrus_binary_path = Some(binary_path.clone());
                     lock.last_run_id = run_id;
+                    lock.version = version;
+                    lock.artifact_name = artifact_name;
+                    lock.workflow_url = workflow_url;
+                    lock.download_url = download_url;
 
                     lock.ready.clone()
                 };

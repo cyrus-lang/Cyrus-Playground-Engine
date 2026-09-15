@@ -600,9 +600,19 @@ async fn execute_and_reply(
             }
         });
 
-        match execute_cyrus_code(executor, &code_owned).await {
+        match execute_cyrus_code(executor.clone(), &code_owned).await {
             Ok(result) => {
                 update_handle.abort();
+
+                let (version, run_id, workflow_url, artifact_name) = {
+                    let lock = executor.lock().await;
+                    (
+                        lock.version.clone().unwrap_or_else(|| "unknown".to_string()),
+                        lock.last_run_id.clone().unwrap_or_else(|| "unknown".to_string()),
+                        lock.workflow_url.clone(),
+                        lock.artifact_name.clone().unwrap_or_else(|| "unknown".to_string()),
+                    )
+                };
 
                 let status = if result.success {
                     format!("Success ({:.2}s)", result.execution_time)
@@ -636,26 +646,32 @@ async fn execute_and_reply(
                     output.push_str(&stderr_clean);
                 }
 
+                let mut footer = format!("<b>{}</b>", escape_html(&status));
+                footer.push_str(&format!("\n<i>Compiler v{} ({})</i>", escape_html(&version), escape_html(&artifact_name)));
+                if let Some(url) = &workflow_url {
+                    footer.push_str(&format!("\n🔗 <a href=\"{}\">GitHub Workflow Action (Run #{})</a>", escape_html(url), escape_html(&run_id)));
+                }
+
                 let formatted = if output.len() > 3500 {
                     format!(
-                        "<blockquote expandable>{}</blockquote>\n\n<b>{}</b>",
+                        "<blockquote expandable>{}</blockquote>\n\n{}",
                         escape_html(&output[..3500]),
-                        escape_html(&status)
+                        footer
                     )
                 } else if output.len() > 200 {
                     format!(
-                        "<blockquote expandable>{}</blockquote>\n\n<b>{}</b>",
+                        "<blockquote expandable>{}</blockquote>\n\n{}",
                         escape_html(&output),
-                        escape_html(&status)
+                        footer
                     )
                 } else if !output.is_empty() {
                     format!(
-                        "<pre>{}</pre>\n\n<b>{}</b>",
+                        "<pre>{}</pre>\n\n{}",
                         escape_html(&output),
-                        escape_html(&status)
+                        footer
                     )
                 } else {
-                    format!("<b>{}</b>", escape_html(&status))
+                    footer
                 };
 
                 let _ = bot_clone
@@ -665,8 +681,22 @@ async fn execute_and_reply(
             }
             Err(e) => {
                 update_handle.abort();
+                let (version, run_id, workflow_url, artifact_name) = {
+                    let lock = executor.lock().await;
+                    (
+                        lock.version.clone().unwrap_or_else(|| "unknown".to_string()),
+                        lock.last_run_id.clone().unwrap_or_else(|| "unknown".to_string()),
+                        lock.workflow_url.clone(),
+                        lock.artifact_name.clone().unwrap_or_else(|| "unknown".to_string()),
+                    )
+                };
+                let mut err_msg = format!("<b>Error: {}</b>", escape_html(&e));
+                err_msg.push_str(&format!("\n<i>Compiler v{} ({})</i>", escape_html(&version), escape_html(&artifact_name)));
+                if let Some(url) = &workflow_url {
+                    err_msg.push_str(&format!("\n🔗 <a href=\"{}\">GitHub Workflow Action (Run #{})</a>", escape_html(url), escape_html(&run_id)));
+                }
                 let _ = bot_clone
-                    .edit_message_text(chat_id, sent_msg_id, format!("<b>{}</b>", escape_html(&e)))
+                    .edit_message_text(chat_id, sent_msg_id, err_msg)
                     .parse_mode(ParseMode::Html)
                     .await;
             }
